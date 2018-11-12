@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   std_srvs
   tf2
+  tf2_eigen
   tf2_geometry_msgs
   tf2_ros
   xmlrpcpp)
@@ -42,6 +43,11 @@ roslint_cpp()
 ###################################
 ## catkin specific configuration ##
 ###################################
+add_message_files(
+  FILES
+    RelativePoseWithCovarianceStamped.msg
+)
+
 add_service_files(
   FILES
     GetState.srv
@@ -85,6 +91,7 @@ catkin_package(
     std_msgs
     std_srvs
     tf2
+    tf2_eigen
     tf2_geometry_msgs
     tf2_ros
     xmlrpcpp

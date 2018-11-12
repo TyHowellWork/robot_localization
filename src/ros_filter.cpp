@@ -36,6 +36,7 @@
 #include "robot_localization/ukf.h"
 
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_eigen/tf2_eigen.h>
 
 #include <algorithm>
 #include <map>
@@ -1188,6 +1189,76 @@ namespace RobotLocalization
     }
     while (moreParams);
 
+    // Repeat for relative pose
+    topicInd = 0;
+    moreParams = false;
+    do
+    {
+      std::stringstream ss;
+      ss << "relative_pose" << topicInd++;
+      std::string relativePoseTopicName = ss.str();
+      moreParams = nhLocal_.hasParam(relativePoseTopicName);
+
+      if (moreParams)
+      {
+        std::string relativePoseTopic;
+        nhLocal_.getParam(relativePoseTopicName, relativePoseTopic);
+
+        // Check for pose rejection threshold
+        double relativePoseMahalanobisThresh;
+        nhLocal_.param(relativePoseTopicName + std::string("_rejection_threshold"),
+                       relativePoseMahalanobisThresh,
+                       std::numeric_limits<double>::max());
+
+        int relativePoseQueueSize = 1;
+        nhLocal_.param(relativePoseTopicName + "_queue_size", relativePoseQueueSize, 1);
+
+        bool nodelayRelativePose = false;
+        nhLocal_.param(relativePoseTopicName + "_nodelay", nodelayRelativePose, false);
+
+        // Pull in the sensor's config, zero out values that are invalid for the pose type
+        std::vector<int> relativePoseUpdateVec = loadUpdateConfig(relativePoseTopicName);
+        std::fill(relativePoseUpdateVec.begin() + POSITION_V_OFFSET,
+                  relativePoseUpdateVec.begin() + POSITION_V_OFFSET + TWIST_SIZE,
+                  0);
+        std::fill(relativePoseUpdateVec.begin() + POSITION_A_OFFSET,
+                  relativePoseUpdateVec.begin() + POSITION_A_OFFSET + ACCELERATION_SIZE,
+                  0);
+
+        int relativePoseUpdateSum = std::accumulate(relativePoseUpdateVec.begin(), relativePoseUpdateVec.end(), 0);
+
+        if (relativePoseUpdateSum > 0)
+        {
+          const CallbackData callbackData(relativePoseTopicName, relativePoseUpdateVec,
+            relativePoseUpdateSum, false, false, relativePoseMahalanobisThresh);
+
+          topicSubs_.push_back(
+            nh_.subscribe<robot_localization::RelativePoseWithCovarianceStamped>(relativePoseTopic,
+              relativePoseQueueSize,
+              boost::bind(&RosFilter::relativePoseCallback, this, _1, callbackData, "", false),
+              ros::VoidPtr(), ros::TransportHints().tcpNoDelay(nodelayRelativePose)));
+
+          absPoseVarCounts[StateMemberX] += relativePoseUpdateVec[StateMemberX];
+          absPoseVarCounts[StateMemberY] += relativePoseUpdateVec[StateMemberY];
+          absPoseVarCounts[StateMemberZ] += relativePoseUpdateVec[StateMemberZ];
+          absPoseVarCounts[StateMemberRoll] += relativePoseUpdateVec[StateMemberRoll];
+          absPoseVarCounts[StateMemberPitch] += relativePoseUpdateVec[StateMemberPitch];
+          absPoseVarCounts[StateMemberYaw] += relativePoseUpdateVec[StateMemberYaw];
+        }
+        else
+        {
+          ROS_WARN_STREAM("Warning: " << relativePoseTopic << " is listed as an input topic, "
+                          "but all pose update variables are false");
+        }
+
+        RF_DEBUG("Subscribed to " << relativePoseTopic << " (" << relativePoseTopicName << ")\n\t" <<
+                 relativePoseTopicName << "_rejection_threshold is " << relativePoseMahalanobisThresh << "\n\t" <<
+                 relativePoseTopicName << "_queue_size is " << relativePoseQueueSize << "\n\t" <<
+                 relativePoseTopicName << " update vector is " << relativePoseUpdateVec);
+      }
+    }
+    while (moreParams);
+
     // Repeat for twist
     topicInd = 0;
     moreParams = false;
@@ -1665,6 +1736,8 @@ namespace RobotLocalization
   {
     const std::string &topicName = callbackData.topicName_;
 
+    std::cerr << "IN POSE CALLBACK! stamp is " << std::setprecision(20) << msg->header.stamp.toSec() << ", last set pose is " << lastSetPoseTime_.toSec() << "\n";
+
     // If we've just reset the filter, then we want to ignore any messages
     // that arrive with an older timestamp
     if (msg->header.stamp <= lastSetPoseTime_)
@@ -1689,6 +1762,8 @@ namespace RobotLocalization
       lastMessageTimes_.insert(std::pair<std::string, ros::Time>(topicName, msg->header.stamp));
     }
 
+    std::cerr << "WTF\n";
+
     // Make sure this message is newer than the last one
     if (msg->header.stamp >= lastMessageTimes_[topicName])
     {
@@ -1703,6 +1778,8 @@ namespace RobotLocalization
       // Make sure we're actually updating at least one of these variables
       std::vector<int> updateVectorCorrected = callbackData.updateVector_;
 
+      std::cerr << "about to prepare data for " << callbackData.topicName_  << "\n";
+
       // Prepare the pose data for inclusion in the filter
       if (preparePose(msg,
                       topicName,
@@ -1714,6 +1791,7 @@ namespace RobotLocalization
                       measurement,
                       measurementCovariance))
       {
+        std::cerr << "measurement is now " << measurement << "\n";
         // Store the measurement. Add a "pose" suffix so we know what kind of measurement
         // we're dealing with when we debug the core filter logic.
         enqueueMeasurement(topicName,
@@ -1754,6 +1832,102 @@ namespace RobotLocalization
                << lastMessageTimes_[topicName] << ", current message time is "
                << msg->header.stamp << ".\n");
     }
+
+    RF_DEBUG("\n----- /RosFilter::poseCallback (" << topicName << ") ------\n");
+  }
+
+  template<typename T>
+  void RosFilter<T>::relativePoseCallback(const robot_localization::RelativePoseWithCovarianceStamped::ConstPtr &msg,
+                                          const CallbackData &callbackData,
+                                          const std::string &,
+                                          const bool)
+  {
+    const std::string &topicName = callbackData.topicName_;
+
+    RF_DEBUG("------ RosFilter::relativePoseCallback (" << topicName << ") ------\n" <<
+             "Relative Pose message:\n" << *msg);
+
+    // Walk through the history, and get the state that preceded this time stamp
+    const double reference_time_sec = msg->origin_stamp.toSec();
+    auto precedingStateIt = std::find_if(
+      filterStateHistory_.rbegin(),
+      filterStateHistory_.rend(),
+      [reference_time_sec](const FilterStatePtr &state){return state->lastMeasurementTime_ <= reference_time_sec;});
+
+    if (precedingStateIt == filterStateHistory_.rend())
+    {
+      ROS_WARN_STREAM("State history was insufficient for use with relative pose.");
+      return;
+    }
+
+    // Initialize the pose message we'll passs on to the pose callback
+    geometry_msgs::PoseWithCovarianceStamped::Ptr finalPoseMsg = boost::make_shared<geometry_msgs::PoseWithCovarianceStamped>();
+    finalPoseMsg->header = msg->header;
+    finalPoseMsg->header.frame_id = worldFrameId_;
+
+    const FilterState &precedingState = **precedingStateIt;
+    const FilterStatePtr currentState = getFilterState();
+
+    // Move the filter back to the preceding state
+    restoreState(precedingState);
+
+    // If necessary, predict to the reference time stamp
+    if (msg->origin_stamp.toSec() - precedingState.lastMeasurementTime_ > 1e-9)
+    {
+      filter_.predict(precedingState.lastMeasurementTime_, msg->origin_stamp.toSec() - precedingState.lastMeasurementTime_);
+    }
+
+    // Get the predicted state
+    const FilterStatePtr referenceState = getFilterState();
+    
+    // Restore the state we started with
+    restoreState(*currentState);
+
+    // Put the reference state into a transform
+    tf2::Transform referenceStateTrans;
+    referenceStateTrans.setOrigin(tf2::Vector3(
+      referenceState->state_(StateMemberX),
+      referenceState->state_(StateMemberY),
+      referenceState->state_(StateMemberZ)));
+    tf2::Quaternion quat;
+    quat.setRPY(
+      referenceState->state_(StateMemberRoll),
+      referenceState->state_(StateMemberPitch),
+      referenceState->state_(StateMemberYaw));
+    referenceStateTrans.setRotation(quat);
+
+    // Put the relative pose into a transform
+    tf2::Transform relativePoseTrans;
+    relativePoseTrans.setOrigin(tf2::Vector3(
+      msg->relative_pose.pose.position.x,
+      msg->relative_pose.pose.position.y,
+      msg->relative_pose.pose.position.z));
+    tf2::Quaternion relativeOrientation;
+    tf2::fromMsg(msg->relative_pose.pose.orientation, relativeOrientation);
+    relativePoseTrans.setRotation(relativeOrientation);
+
+    // Compute the final pose
+    tf2::Transform finalPose = referenceStateTrans * relativePoseTrans;
+    tf2::toMsg(finalPose, finalPoseMsg->pose.pose);
+
+    // Also need to transform the covariance
+    Eigen::Affine3d reference_state_eigen = tf2::transformToEigen(tf2::toMsg(referenceStateTrans));
+    Eigen::MatrixXd rotationMatrix(POSE_SIZE, POSE_SIZE);
+    rotationMatrix.setZero();
+    rotationMatrix.block(POSITION_OFFSET, POSITION_OFFSET, ORIENTATION_SIZE, ORIENTATION_SIZE) =
+      reference_state_eigen.rotation();
+    rotationMatrix.block(ORIENTATION_OFFSET, ORIENTATION_OFFSET, ORIENTATION_SIZE, ORIENTATION_SIZE) =
+      reference_state_eigen.rotation();
+
+    finalPoseMsg->pose.covariance = msg->relative_pose.covariance;
+    Eigen::Map<Eigen::Matrix<double, 6, 6>> rotatedCovariance(finalPoseMsg->pose.covariance.data());
+
+    std::cerr << "original covar is " << rotatedCovariance << "\n\n";
+    std::cerr << "state covar is " << referenceState->estimateErrorCovariance_.block(0, 0, 6, 6) << "\n\n";
+    rotatedCovariance = referenceState->estimateErrorCovariance_.block(0, 0, 6, 6) + rotationMatrix * rotatedCovariance * rotationMatrix.transpose();
+    std::cerr << "final covar is " << rotatedCovariance << "\n\n";
+
+    poseCallback(finalPoseMsg, callbackData, worldFrameId_, false);
 
     RF_DEBUG("\n----- /RosFilter::poseCallback (" << topicName << ") ------\n");
   }
@@ -3054,15 +3228,23 @@ namespace RobotLocalization
   template<typename T>
   void RosFilter<T>::saveFilterState(FilterBase& filter)
   {
-    FilterStatePtr state = FilterStatePtr(new FilterState());
-    state->state_ = Eigen::VectorXd(filter.getState());
-    state->estimateErrorCovariance_ = Eigen::MatrixXd(filter.getEstimateErrorCovariance());
-    state->lastMeasurementTime_ = filter.getLastMeasurementTime();
-    state->latestControl_ = Eigen::VectorXd(filter.getControl());
-    state->latestControlTime_ = filter.getControlTime();
+    auto state = getFilterState();
     filterStateHistory_.push_back(state);
     RF_DEBUG("Saved state with timestamp " << std::setprecision(20) << state->lastMeasurementTime_ <<
              " to history. " << filterStateHistory_.size() << " measurements are in the queue.\n");
+  }
+
+  template<typename T>
+  FilterStatePtr RosFilter<T>::getFilterState()
+  {
+    FilterStatePtr state = FilterStatePtr(new FilterState());
+    state->state_ = Eigen::VectorXd(filter_.getState());
+    state->estimateErrorCovariance_ = Eigen::MatrixXd(filter_.getEstimateErrorCovariance());
+    state->lastMeasurementTime_ = filter_.getLastMeasurementTime();
+    state->latestControl_ = Eigen::VectorXd(filter_.getControl());
+    state->latestControlTime_ = filter_.getControlTime();
+
+    return state;
   }
 
   template<typename T>
@@ -3109,9 +3291,7 @@ namespace RobotLocalization
     {
       // Reset filter to the latest state from the queue.
       const FilterStatePtr &state = lastHistoryState;
-      filter_.setState(state->state_);
-      filter_.setEstimateErrorCovariance(state->estimateErrorCovariance_);
-      filter_.setLastMeasurementTime(state->lastMeasurementTime_);
+      restoreState(*state);
 
       RF_DEBUG("Reverted to state with time " << std::setprecision(20) << state->lastMeasurementTime_ << "\n");
 
@@ -3135,6 +3315,14 @@ namespace RobotLocalization
     RF_DEBUG("\n----- /RosFilter::revertTo\n");
 
     return retVal;
+  }
+
+  template<typename T>
+  void RosFilter<T>::restoreState(const FilterState &state)
+  {
+    filter_.setState(state.state_);
+    filter_.setEstimateErrorCovariance(state.estimateErrorCovariance_);
+    filter_.setLastMeasurementTime(state.lastMeasurementTime_);
   }
 
   template<typename T>

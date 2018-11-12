@@ -38,6 +38,7 @@
 #include "robot_localization/filter_base.h"
 
 #include <robot_localization/SetPose.h>
+#include <robot_localization/RelativePoseWithCovarianceStamped.h>
 #include <robot_localization/ToggleFilterProcessing.h>
 
 #include <ros/ros.h>
@@ -236,6 +237,15 @@ template<class T> class RosFilter
                       const CallbackData &callbackData,
                       const std::string &targetFrame,
                       const bool imuData);
+
+    void relativePoseCallback(const robot_localization::RelativePoseWithCovarianceStamped::ConstPtr &msg,
+                              const CallbackData &callbackData,
+                              const std::string &,
+                              const bool);
+
+    void restoreState(const FilterState &state);
+
+    FilterStatePtr getFilterState();
 
     //! @brief Main run method
     //!
