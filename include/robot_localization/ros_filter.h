@@ -50,6 +50,7 @@
 #include <geometry_msgs/TwistWithCovarianceStamped.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <geometry_msgs/AccelWithCovarianceStamped.h>
+#include <std_msgs/Bool.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/message_filter.h>
@@ -479,6 +480,12 @@ template<class T> class RosFilter
     //!
     ros::Time latestControlTime_;
 
+    //! @brief If \p publishLocalized_ is true, this message contains our current localizations tate
+    //!
+    //! For more information, see the definition of publishLocalized_
+    //!
+    std_msgs::Bool localizedMsg_;
+
     //! @brief Parameter that specifies the how long we wait for a transform to become available.
     //!
     ros::Duration tfTimeout_;
@@ -562,6 +569,15 @@ template<class T> class RosFilter
     //! @brief Whether or not we print diagnostic messages to the /diagnostics topic
     //!
     bool printDiagnostics_;
+
+    //! @brief Whether or not to publish a localized message to indicate that we've had an initial pose estimate
+    //!
+    //! In some applications, we need to know if the EKF has been initialized with some starting state. We assume here
+    //! that being localized means:
+    //!   - The user has provided an initial state via the initial_state parameter
+    //!   - The user has send a set_pose service request
+    //!
+    bool publishLocalized_;
 
     //! @brief If including acceleration for each IMU input, whether or not we remove acceleration due to gravity
     //!

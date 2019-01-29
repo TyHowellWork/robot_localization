@@ -99,6 +99,8 @@ namespace RobotLocalization
   template<typename T>
   void RosFilter<T>::reset()
   {
+    localizedMsg_.data = false;
+
     // Get rid of any initial poses (pretend we've never had a measurement)
     initialMeasurements_.clear();
     previousMeasurements_.clear();
@@ -913,12 +915,16 @@ namespace RobotLocalization
         Eigen::Map<Eigen::VectorXd> eigenState(initialState.data(), initialState.size());
         filter_.setState(eigenState);
       }
+
+      localizedMsg_.data = true;
     }
 
     // Check if the filter should start or not
     nhLocal_.param("disabled_at_startup", disabledAtStartup_, false);
     enabled_ = !disabledAtStartup_;
 
+    // Check if the filter should flag whether we're localized or no
+    nhLocal_.param("publish_localized", publishLocalized_, false);
 
     // Debugging writes to file
     RF_DEBUG("tf_prefix is " << tfPrefix <<
@@ -1801,6 +1807,12 @@ namespace RobotLocalization
     // Publisher
     ros::Publisher positionPub = nh_.advertise<nav_msgs::Odometry>("odometry/filtered", 20);
     tf2_ros::TransformBroadcaster worldTransformBroadcaster;
+    ros::Publisher localizedPub;
+
+    if (publishLocalized_)
+    {
+      localizedPub = nh_.advertise<std_msgs::Bool>("localized", 20);
+    }
 
     // Optional acceleration publisher
     ros::Publisher accelPub;
@@ -1954,6 +1966,11 @@ namespace RobotLocalization
         accelPub.publish(filteredAcceleration);
       }
 
+      if (publishLocalized_)
+      {
+        localizedPub.publish(localizedMsg_);
+      }
+
       /* Diagnostics can behave strangely when playing back from bag
        * files and using simulated time, so we have to check for
        * time suddenly moving backwards as well as the standard
@@ -2033,6 +2050,8 @@ namespace RobotLocalization
     filter_.setEstimateErrorCovariance(measurementCovariance);
 
     filter_.setLastMeasurementTime(ros::Time::now().toSec());
+
+    localizedMsg_.data = true;
 
     RF_DEBUG("\n------ /RosFilter::setPoseCallback ------\n");
   }
