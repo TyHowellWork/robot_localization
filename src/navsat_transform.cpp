@@ -59,6 +59,7 @@ namespace RobotLocalization
     zero_altitude_(false),
     magnetic_declination_(0.0),
     yaw_offset_(0.0),
+    transform_reset_period_(5.0),
     base_link_frame_id_("base_link"),
     gps_frame_id_(""),
     utm_zone_(0),
@@ -72,6 +73,8 @@ namespace RobotLocalization
 
     latest_cartesian_covariance_.resize(POSE_SIZE, POSE_SIZE);
     latest_odom_covariance_.resize(POSE_SIZE, POSE_SIZE);
+
+    latest_transform_time_ = ros::Time::now();
 
     double frequency;
     double delay = 0.0;
@@ -91,6 +94,7 @@ namespace RobotLocalization
     nh_priv.param("frequency", frequency, 10.0);
     nh_priv.param("delay", delay, 0.0);
     nh_priv.param("transform_timeout", transform_timeout, 0.0);
+    nh_priv.param("transform_reset_period", transform_reset_period_, 0.0);
     transform_timeout_.fromSec(transform_timeout);
 
     // Check for deprecated parameters
@@ -199,13 +203,31 @@ namespace RobotLocalization
 //  void NavSatTransform::run()
   void NavSatTransform::periodicUpdate(const ros::TimerEvent& event)
   {
+    ros::Duration time_since_transform = ros::Time::now() - latest_transform_time_;
+    bool reset_exceeded = time_since_transform > ros::Duration(transform_reset_period_);
+    if (transform_reset_period_ <= 0.0)
+    {
+      // a reset period of 0.0 indicates no periodic resets should be performed
+      reset_exceeded = false;
+    }
+    if (reset_exceeded && transform_good_)
+    {
+      ROS_INFO_STREAM("Reset transform period exceeded, resetting transform.");
+      transform_good_ = false;
+      has_transform_imu_ = false;
+      has_transform_odom_ = false;
+      has_transform_gps_ = false;
+    }
+
     if (!transform_good_)
     {
       computeTransform();
 
-      if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_)
+      if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_ 
+          && transform_reset_period_ <= 0.0)
       {
         // Once we have the transform, we don't need the IMU
+        // Don't shutdown if periodically resetting transform
         imu_sub_.shutdown();
       }
     }
@@ -313,6 +335,7 @@ namespace RobotLocalization
       ROS_INFO_STREAM("Transform world frame pose is: " << transform_world_pose_);
       ROS_INFO_STREAM("World frame->cartesian transform is " << cartesian_world_transform_);
 
+      latest_transform_time_ = ros::Time::now();
       transform_good_ = true;
 
       // Send out the (static) Cartesian transform in case anyone else would like to use it.
@@ -672,12 +695,13 @@ namespace RobotLocalization
   {
     // We need the baseLinkFrameId_ from the odometry message, so
     // we need to wait until we receive it.
-    if (has_transform_odom_)
+    if (has_transform_odom_ && !has_transform_imu_)
     {
       /* This method only gets called if we don't yet have the
        * IMU data (the subscriber gets shut down once we compute
-       * the transform), so we can assumed that every IMU message
-       * that comes here is meant to be used for that purpose. */
+       * the transform) or a reset is required, so we can assume
+       * that every IMU message that comes here is meant to be
+       * be used for that purpose. */
       tf2::fromMsg(msg->orientation, transform_orientation_);
 
       // Correct for the IMU's orientation w.r.t. base_link

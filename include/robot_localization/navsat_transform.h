@@ -239,6 +239,13 @@ class NavSatTransform
     //!
     double yaw_offset_;
 
+    //! @brief Transform reset period
+    //!
+    //! Period for resetting Cartesian->odom transform.
+    //!
+    double transform_reset_period_;
+
+
     //! @brief Frame ID of the robot's body frame
     //!
     //! This is needed for obtaining transforms from the robot's body frame to the frames of sensors (IMU and GPS)
@@ -282,6 +289,12 @@ class NavSatTransform
     //! We assign this value to the timestamp of the odometry message that we output
     //!
     ros::Time odom_update_time_;
+
+    //! @brief Timestamp of the latest transform calculation
+    //!
+    //! We assign this value to the timestamp of the latest transform we calculated
+    //!
+    ros::Time latest_transform_time_;
 
     //! @brief Parameter that specifies the how long we wait for a transform to become available.
     //!
