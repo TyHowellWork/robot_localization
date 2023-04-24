@@ -43,6 +43,7 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/NavSatFix.h>
+#include <std_msgs/Float32.h>
 
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -193,6 +194,10 @@ class NavSatTransform
     //!
     bool publish_gps_;
 
+    //! @brief Whether or not we publish north orientation in map frame
+    //!
+    bool publish_map_north_;
+
     //! @brief Whether or not we've computed a good heading
     //!
     bool transform_good_;
@@ -231,6 +236,10 @@ class NavSatTransform
     //! It increases as the poles are approached or as we're getting farther from central meridian.
     //!
     double utm_meridian_convergence_;
+
+    //! @brief Publisher for the angle of gps "true" north relative to map frame
+    //!
+    ros::Publisher map_north_pub_;
 
     //! @brief IMU's yaw offset
     //!

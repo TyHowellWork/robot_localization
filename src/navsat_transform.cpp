@@ -52,6 +52,7 @@ namespace RobotLocalization
     has_transform_odom_(false),
     odom_updated_(false),
     publish_gps_(false),
+    publish_map_north_(false),
     transform_good_(false),
     use_manual_datum_(false),
     use_odometry_yaw_(false),
@@ -88,6 +89,7 @@ namespace RobotLocalization
                   broadcast_cartesian_transform_as_parent_frame_, false);
     nh_priv.param("zero_altitude", zero_altitude_, false);
     nh_priv.param("publish_filtered_gps", publish_gps_, false);
+    nh_priv.param("publish_map_north", publish_map_north_, false);
     nh_priv.param("use_odometry_yaw", use_odometry_yaw_, false);
     nh_priv.param("wait_for_datum", use_manual_datum_, false);
     nh_priv.param("use_local_cartesian", use_local_cartesian_, false);
@@ -99,15 +101,12 @@ namespace RobotLocalization
 
     // Check for deprecated parameters
     if (nh_priv.getParam("broadcast_utm_transform", broadcast_cartesian_transform_))
-    {
       ROS_WARN("navsat_transform, Parameter 'broadcast_utm_transform' has been deprecated. Please use"
                "'broadcast_cartesian_transform' instead.");
-    }
+
     if (nh_priv.getParam("broadcast_utm_transform_as_parent_frame", broadcast_cartesian_transform_as_parent_frame_))
-    {
       ROS_WARN("navsat_transform, Parameter 'broadcast_utm_transform_as_parent_frame' has been deprecated. Please use"
                "'broadcast_cartesian_transform_as_parent_frame' instead.");
-    }
 
     // Subscribe to the messages and services we need
     datum_srv_ = nh.advertiseService("datum", &NavSatTransform::datumCallback, this);
@@ -134,10 +133,8 @@ namespace RobotLocalization
         ROS_ASSERT(datum_config.size() >= 3);
 
         if (datum_config.size() > 3)
-        {
           ROS_WARN_STREAM("Deprecated datum parameter configuration detected. Only the first three parameters "
               "(latitude, longitude, yaw) will be used. frame_ids will be derived from odometry and navsat inputs.");
-        }
 
         std::ostringstream ostr;
         ostr << std::setprecision(20) << datum_config[0] << " " << datum_config[1] << " " << datum_config[2];
@@ -148,9 +145,7 @@ namespace RobotLocalization
         std::string tf_prefix = "";
         std::string tf_prefix_path = "";
         if (nh_priv.searchParam("tf_prefix", tf_prefix_path))
-        {
           nh_priv.getParam(tf_prefix_path, tf_prefix);
-        }
 
         // Append the tf prefix in a tf2-friendly manner
         FilterUtilities::appendPrefix(tf_prefix, world_frame_id_);
@@ -177,16 +172,15 @@ namespace RobotLocalization
     gps_sub_  = nh.subscribe("gps/fix", 1, &NavSatTransform::gpsFixCallback, this);
 
     if (!use_odometry_yaw_ && !use_manual_datum_)
-    {
       imu_sub_ = nh.subscribe("imu/data", 1, &NavSatTransform::imuCallback, this);
-    }
 
     gps_odom_pub_ = nh.advertise<nav_msgs::Odometry>("odometry/gps", 10);
 
     if (publish_gps_)
-    {
       filtered_gps_pub_ = nh.advertise<sensor_msgs::NavSatFix>("gps/filtered", 10);
-    }
+
+    if (publish_map_north_)
+      map_north_pub_ = nh.advertise<std_msgs::Float32>("mapNorth", 1, true); // latching publisher
 
     // Sleep for the parameterized amount of time, to give
     // other nodes time to start up (not always necessary)
@@ -235,17 +229,13 @@ namespace RobotLocalization
     {
       nav_msgs::Odometry gps_odom;
       if (prepareGpsOdometry(gps_odom))
-      {
         gps_odom_pub_.publish(gps_odom);
-      }
 
       if (publish_gps_)
       {
         sensor_msgs::NavSatFix odom_gps;
         if (prepareFilteredGps(odom_gps))
-        {
           filtered_gps_pub_.publish(odom_gps);
-        }
       }
     }
   }
@@ -264,13 +254,9 @@ namespace RobotLocalization
       // cartesian pose of the robot's origin.
       tf2::Transform transform_cartesian_pose_corrected;
       if (!use_manual_datum_)
-      {
         getRobotOriginCartesianPose(transform_cartesian_pose_, transform_cartesian_pose_corrected, ros::Time(0));
-      }
       else
-      {
         transform_cartesian_pose_corrected = transform_cartesian_pose_;
-      }
 
       // Get the IMU's current RPY values. Need the raw values (for yaw, anyway).
       tf2::Matrix3x3 mat(transform_orientation_);
@@ -329,6 +315,15 @@ namespace RobotLocalization
       transform_world_pose_yaw_only.setRotation(odom_quat);
 
       cartesian_world_transform_.mult(transform_world_pose_yaw_only, cartesian_pose_with_orientation.inverse());
+
+      double utm_map_roll; double utm_map_pitch; double utm_map_yaw;
+      tf2::Matrix3x3(cartesian_world_transform_.getRotation()).getRPY(utm_map_roll, utm_map_pitch, utm_map_yaw);
+
+      std_msgs::Float32 float_msg;
+      // angle from map to north = angle from grid to map + angle from grid north to true north
+      float_msg.data = utm_map_yaw + utm_meridian_convergence_;
+      ROS_INFO_STREAM("UTM Map Yaw: "<<utm_map_yaw<<", utm_meridian_convergence: "<<utm_meridian_convergence_);
+      map_north_pub_.publish(float_msg);
 
       cartesian_world_trans_inverse_ = cartesian_world_transform_.inverse();
 
@@ -431,9 +426,7 @@ namespace RobotLocalization
     double cartesian_z;
 
     if (use_local_cartesian_)
-    {
       gps_local_cartesian_.Forward(latitude, longitude, altitude, cartesian_x, cartesian_y, cartesian_z);
-    }
     else
     {
       int zone_tmp;
@@ -570,10 +563,8 @@ namespace RobotLocalization
     else
     {
       if (gps_frame_id_ != "")
-      {
         ROS_WARN_STREAM_ONCE("Unable to obtain " << base_link_frame_id_ << "->" << gps_frame_id_ <<
           " transform. Will assume navsat device is mounted at robot's origin");
-      }
 
       robot_cartesian_pose = gps_cartesian_pose;
     }
@@ -630,10 +621,8 @@ namespace RobotLocalization
     gps_frame_id_ = msg->header.frame_id;
 
     if (gps_frame_id_.empty())
-    {
       ROS_WARN_STREAM_ONCE("NavSatFix message has empty frame_id. Will assume navsat device is mounted at robot's "
         "origin.");
-    }
 
     // Make sure the GPS data is usable
     bool good_gps = (msg->status.status != sensor_msgs::NavSatStatus::STATUS_NO_FIX &&
@@ -646,18 +635,13 @@ namespace RobotLocalization
       // If we haven't computed the transform yet, then
       // store this message as the initial GPS data to use
       if (!transform_good_ && !use_manual_datum_)
-      {
         setTransformGps(msg);
-      }
 
       double cartesian_x = 0.0;
       double cartesian_y = 0.0;
       double cartesian_z = 0.0;
       if (use_local_cartesian_)
-      {
-        gps_local_cartesian_.Forward(msg->latitude, msg->longitude, msg->altitude,
-                                     cartesian_x, cartesian_y, cartesian_z);
-      }
+        gps_local_cartesian_.Forward(msg->latitude, msg->longitude, msg->altitude, cartesian_x, cartesian_y, cartesian_z);
       else
       {
         // Transform to UTM using the fixed utm_zone_
@@ -753,19 +737,13 @@ namespace RobotLocalization
     base_link_frame_id_ = msg->child_frame_id;
 
     if (!transform_good_ && !use_manual_datum_)
-    {
       setTransformOdometry(msg);
-    }
 
     tf2::fromMsg(msg->pose.pose, latest_world_pose_);
     latest_odom_covariance_.setZero();
     for (size_t row = 0; row < POSE_SIZE; ++row)
-    {
       for (size_t col = 0; col < POSE_SIZE; ++col)
-      {
         latest_odom_covariance_(row, col) = msg->pose.covariance[row * POSE_SIZE + col];
-      }
-    }
 
     odom_update_time_ = msg->header.stamp;
     odom_updated_ = true;
