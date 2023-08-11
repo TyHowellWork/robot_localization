@@ -72,6 +72,8 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   odom_updated_(false),
   publish_gps_(false),
   transform_good_(false),
+  transform_initialized_(false),
+  transform_reset_period_(0.0),
   transform_timeout_(0ns),
   use_local_cartesian_(false),
   use_manual_datum_(false),
@@ -89,6 +91,8 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   latest_cartesian_covariance_.resize(POSE_SIZE, POSE_SIZE);
   latest_odom_covariance_.resize(POSE_SIZE, POSE_SIZE);
 
+  latest_transform_time_ = this->now();
+
   double frequency = 10.0;
   double delay = 0.0;
   double transform_timeout = 0.0;
@@ -103,6 +107,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   use_local_cartesian_ = this->declare_parameter("use_local_cartesian", false);
   frequency = this->declare_parameter("frequency", frequency);
   delay = this->declare_parameter("delay", delay);
+  transform_reset_period_ = this->declare_parameter("transform_reset_period", 0.0);
   transform_timeout = this->declare_parameter("transform_timeout", transform_timeout);
 
   transform_timeout_ = tf2::durationFromSec(transform_timeout);
@@ -213,11 +218,30 @@ NavSatTransform::~NavSatTransform() {}
 
 void NavSatTransform::transformCallback()
 {
+  rclcpp::Duration time_since_transform = this->now() - latest_transform_time_;
+  bool reset_exceeded = time_since_transform > rclcpp::Duration::from_seconds(transform_reset_period_);
+  if (transform_reset_period_ <= 0.0)
+  {
+    // a reset period of 0.0 indicates no periodic resets should be performed
+    reset_exceeded = false;
+  }
+  if (reset_exceeded && transform_good_)
+  {
+    RCLCPP_INFO(
+    this->get_logger(), "Reset UTM transform period exceeded, resetting UTM transform.");
+    transform_good_ = false;
+    has_transform_imu_ = false;
+    has_transform_odom_ = false;
+    has_transform_gps_ = false;
+  }
+
   if (!transform_good_) {
     computeTransform();
 
-    if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_) {
+    if (transform_good_ && !use_odometry_yaw_ && !use_manual_datum_ 
+        && transform_reset_period_ <= 0.0) {
       // Once we have the transform, we don't need the IMU
+      // as long as we aren't periodically resetting the transform
       imu_sub_.reset();
     }
   } else {
@@ -324,6 +348,8 @@ void NavSatTransform::computeTransform()
     cartesian_world_trans_inverse_ = cartesian_world_transform_.inverse();
 
     transform_good_ = true;
+    transform_initialized_ = true;
+    latest_transform_time_ = this->now();
 
     // Send out the (static) UTM transform in case anyone else would like to use
     // it.
@@ -398,7 +424,7 @@ bool NavSatTransform::toLLCallback(
   const std::shared_ptr<robot_localization::srv::ToLL::Request> request,
   std::shared_ptr<robot_localization::srv::ToLL::Response> response)
 {
-  if (!transform_good_) {
+  if (!transform_initialized_) {
     return false;
   }
   // tf2::Vector3 point;
@@ -448,7 +474,7 @@ bool NavSatTransform::fromLLCallback(
 
   nav_msgs::msg::Odometry gps_odom;
 
-  if (!transform_good_) {
+  if (!transform_initialized_) {
     return false;
   }
 
@@ -648,11 +674,12 @@ void NavSatTransform::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
   // We need the baseLinkFrameId_ from the odometry message, so
   // we need to wait until we receive it.
-  if (has_transform_odom_) {
+  if (has_transform_odom_ && !has_transform_imu_) {
     /* This method only gets called if we don't yet have the
      * IMU data (the subscriber gets shut down once we compute
-     * the transform), so we can assumed that every IMU message
-     * that comes here is meant to be used for that purpose. */
+     * the transform) or a reset is required, so we can assume
+     * that every IMU message that comes here is meant to be 
+     * used for that purpose. */
     tf2::fromMsg(msg->orientation, transform_orientation_);
 
     // Correct for the IMU's orientation w.r.t. base_link
@@ -723,7 +750,7 @@ bool NavSatTransform::prepareFilteredGps(
 {
   bool new_data = false;
 
-  if (transform_good_ && odom_updated_) {
+  if (transform_initialized_ && odom_updated_) {
     mapToLL(
       latest_world_pose_.getOrigin(), filtered_gps->latitude,
       filtered_gps->longitude, filtered_gps->altitude);

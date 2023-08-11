@@ -283,6 +283,14 @@ private:
   tf2::Transform latest_cartesian_pose_;
 
   /**
+   * @brief Timestamp of the latest transform calculation
+   *
+   * We assign this value to the timestamp of the latest transform we 
+   * calculated
+   */
+  rclcpp::Time latest_transform_time_;
+
+  /**
    * @brief Latest odometry pose data
    */
   tf2::Transform latest_world_pose_;
@@ -334,6 +342,11 @@ private:
    */
   bool transform_good_;
 
+    /**
+   * @brief Whether or not we've initialized a good heading
+   */
+  bool transform_initialized_;
+
   /**
    * @brief Timer
    */
@@ -343,6 +356,14 @@ private:
    * @brief Latest IMU orientation
    */
   tf2::Quaternion transform_orientation_;
+
+  /**
+   * @brief Transform reset period
+   *
+   * Period for resetting Cartesian->odom transform.
+   */
+  double transform_reset_period_;
+
 
   /**
    * @brief Parameter that specifies the how long we wait for a transform to
