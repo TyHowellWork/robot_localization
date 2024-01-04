@@ -42,8 +42,10 @@
 #include <GeographicLib/LocalCartesian.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/qos.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <std_msgs/msg/float32.hpp>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -216,6 +218,10 @@ private:
    */
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr filtered_gps_pub_;
 
+  //! @brief Publisher for the angle of gps "true" north relative to map frame
+  //!
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr map_north_pub_;
+
   /**
    * @brief The frame_id of the GPS message (specifies mounting location)
    */
@@ -327,6 +333,10 @@ private:
    */
   bool publish_gps_;
 
+  //! @brief Whether or not we publish north orientation in map frame
+  //!
+  bool publish_map_north_;
+  
   /**
    * @brief Transform buffer for managing coordinate transforms
    */

@@ -71,6 +71,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   magnetic_declination_(0.0),
   odom_updated_(false),
   publish_gps_(false),
+  publish_map_north_(false),
   transform_good_(false),
   transform_initialized_(false),
   transform_reset_period_(0.0),
@@ -102,6 +103,7 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
   yaw_offset_ = this->declare_parameter("yaw_offset", 0.0);
   zero_altitude_ = this->declare_parameter("zero_altitude", false);
   publish_gps_ = this->declare_parameter("publish_filtered_gps", true);
+  publish_map_north_ = this->declare_parameter("publish_map_north", false);
   use_odometry_yaw_ = this->declare_parameter("use_odometry_yaw", false);
   use_manual_datum_ = this->declare_parameter("wait_for_datum", false);
   use_local_cartesian_ = this->declare_parameter("use_local_cartesian", false);
@@ -201,6 +203,14 @@ NavSatTransform::NavSatTransform(const rclcpp::NodeOptions & options)
     filtered_gps_pub_ =
       this->create_publisher<sensor_msgs::msg::NavSatFix>(
       "gps/filtered", rclcpp::QoS(10), publisher_options);
+  }
+
+  if (publish_map_north_) {
+    rclcpp::QoS qos_latching = rclcpp::QoS(1);
+    qos_latching.transient_local();
+    map_north_pub_ =
+      this->create_publisher<std_msgs::msg::Float32>(
+      "mapNorth", qos_latching);
   }
 
   // Sleep for the parameterized amount of time, to give
@@ -344,6 +354,17 @@ void NavSatTransform::computeTransform()
     cartesian_world_transform_.mult(
       transform_world_pose_yaw_only,
       cartesian_pose_with_orientation.inverse());
+
+    if (publish_map_north_) {
+      double utm_map_roll; double utm_map_pitch; double utm_map_yaw;
+      tf2::Matrix3x3(cartesian_world_transform_.getRotation()).getRPY(utm_map_roll, utm_map_pitch, utm_map_yaw);
+
+      std_msgs::msg::Float32 float_msg;
+      // angle from map to north = angle from grid to map + angle from grid north to true north
+      float_msg.data = utm_map_yaw + utm_meridian_convergence_;
+      RCLCPP_INFO_STREAM(this->get_logger(), "UTM Map Yaw: "<<utm_map_yaw<<", utm_meridian_convergence: "<<utm_meridian_convergence_);
+      map_north_pub_->publish(float_msg);
+    }
 
     cartesian_world_trans_inverse_ = cartesian_world_transform_.inverse();
 
